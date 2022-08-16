@@ -1,0 +1,336 @@
+// Bicycle .90 
+
+// Leaning is controlled by mouse movements, and affects how quickly you turn.
+// Jump using the normal jump button.
+// Jump is affected by which direction you are tilting.
+
+// To do:
+
+// 1: animations for the vehicle itself, definitely
+// 2: clean out variables that do not need to be calculated per frame
+// 3: figure out a clever way to allow the player to roll while not ON it without a new weapon
+// 4: sudden turns = fall //this block has to stay***************
+// 5: steering one way and tilting the other = fall
+// 6: high angles at low speeds wont move
+// 7: steering at high speeds too hard = fall
+// 8: steering at at low speeds while upright is fine
+	// maybe have a thread always running that gets the nearest player in super close proximity
+	// and gives him y axis tilt control at a high sensitivity 
+	// Feel free to improve the script any way you see fit.
+
+
+object vehicle_bicycle : vehicle_base {
+	void			preinit();			 
+	void			init();   			 
+
+	vector 			input;    			 // stores player input 
+	
+	void			OnCollision( object traceObject, float velocity, vector mins, vector maxs );
+	float			frameTime;			 // used to incriment values per frame
+	float			vGetSteerScale();
+	entity 			driver;   			 // stores who the driver is for user input information
+	
+	void			OnPlayerEntered( entity p, float position );
+	void			OnPlayerExited( entity p, float position );
+	
+	void			OnWeaponSelected( entity p, float index );	
+	float			tiltThread;  	   
+	float			jumpThread;
+	
+	void			tilt();
+
+	void			vSetDeployableOwner( entity p );
+	void			vRemoveObject();
+
+	float			steeringAngle;
+	
+
+	void			jump(vector ang);
+	
+	float			turnSpeed;	
+	float			maxTurnSpeed;
+	
+	float			jumpHeight;	
+	float			maxJumpHeight;	
+
+	float			turnRampUpTime;
+	float			turnRampDownTime;
+
+	float			turnRampAccel;
+	float 			turnRampDecel;	
+
+	float 			jumpRampUpTime;
+	float 			jumpRampDownTime;
+
+	float 			jumpRampAccel;
+	float 			jumpRampDecel;
+	
+	vector forward;
+	vector up;
+	vector jumpUp;
+	entity bounds;
+}
+
+
+
+void vehicle_bicycle::preinit() {	
+
+	tiltThread = -1;
+	steeringAngle	= getFloatKeyWithDefault( "steering_angle", 45 );
+	
+//ramps for gradual variable modification
+	maxTurnSpeed	= 10;
+	turnSpeed		= 0;	
+
+	maxJumpHeight	= 450;
+	jumpHeight		= 0;	
+
+	turnRampUpTime	= 1;
+	turnRampDownTime	= .001f;
+
+	turnRampAccel	= maxTurnSpeed / turnRampUpTime;
+	turnRampDecel	= maxTurnSpeed / turnRampDownTime;	
+
+	jumpRampUpTime	= 3;
+	jumpRampDownTime	= 1;
+
+	jumpRampAccel	= maxJumpHeight / jumpRampUpTime;
+	jumpRampDecel	= maxJumpHeight / jumpRampDownTime;
+}
+
+void vehicle_bicycle::init() {
+
+	// was testing attaching things to the bicycle. This works, but there's no real application yet
+
+	// bounds = sys.spawn("collision_controls");		
+	// float bindJoint = getJointHandle("bars_rotation");		
+	// vector bindPos = getJointPos(bindJoint);
+	
+	// bounds.setOrigin(bindPos);
+	// bounds.bind(self);
+
+}
+
+void vehicle_bicycle::jump(vector ang) {
+   //you can turn in air by leaning and using mouse imput. Air turning is faster
+
+	vector tempVel = getLinearVelocity();			//used add the jump direction to the current movement direction, rather than stopping and jumping	
+	vector jump;
+	
+	while (true) {
+		
+		jumpUp = sys.angToUp( ang );	
+		
+		jumpHeight = jumpHeight + jumpRampAccel * frameTime;				 //increase the height every frame
+		
+		if ( jumpHeight > maxJumpHeight ) { 					//caps jumpheight so you can't hold it down forever
+			jumpHeight = maxJumpHeight;
+		}		
+		
+		jump_z = jumpHeight; 
+		if (up_z > .4) {
+			jump = ((jumpUp * jump_z) * up_z);
+		} else {
+			jump = ((jumpUp * jump_z) * (up_z * 1.25));
+		}
+
+		if (hasGroundContacts()) {
+			if (input_z == 0){
+				setLinearVelocity(jump + tempVel);
+			}
+		}
+		
+		if (input_z != 1) {
+			break;
+		}
+		
+	sys.waitFrame();
+	}
+}
+
+void vehicle_bicycle::tilt() {
+
+	entity driver = getDriver();					 // needs to be here for oldAngles to read it
+	
+	//vectors for doing stuff /IN 3D/
+	
+	vector oldAngles = driver.getUserCmdAngles();
+	vector newAngles;
+	vector angleDiff;
+	vector temp;
+	vector mouseRollAngles;
+
+	vector angles;
+	vector keyTurnVel;
+	
+	vector m_turnRoll;
+	vector leftAndRight;
+	
+	float leanTurnMult;
+	float upMultiplier;
+	
+	while ( true ) {
+	
+	driver = getDriver();							// needs to be here also or else you would be able to tilt bike without being on it
+	
+		newAngles = oldAngles;	
+		
+		if ( driver == $null_entity ) {
+				input = '0 0 0';
+				break;
+		} else {
+			input = driver.getMove();
+			newAngles = driver.getUserCmdAngles();
+		}	
+		
+		frameTime = sys.getFrameTime();                        		//used as a frame of reference for time
+		vector currentLinVel = getLinearVelocity();           		  //stores current linearvelocity for the frame for future tomfoolery
+		angles = getAngles();									//inputs angles from entity
+		forward = sys.angToForward( angles );				//transforms the angles vector to forward
+		up = sys.angToUp( angles );								//needed for doing things involving pointing up
+		upMultiplier = ((1 - sys.fabs(up_z)) * up_z); 			// makes bicycle turn better the closer it is to 45 degrees. Below this, it will suck, above this it will suck.	
+		leftAndRight = sys.rotateVec(up, forward, 90); 			// Used to divide the vehicle's positioning into quadrants by rotating first direction around seciond axis. Used to separate left from right.
+	
+	
+		if (hasGroundContacts()){ 					//if it is touching the ground
+		
+			leanTurnMult = 30 * upMultiplier;  			 // multiplies the up direction by upMultiplier, which sharpens turns depending on the angle
+			if(up_z <= 0) {
+				kickPlayer(-1,0);				 // kicks the player if he is upside down and on the ground. //add function that auto flips it if there's no driver entity. addTorque, addForce, maybe
+			}
+			if (input_z > 0){                        		// initiates the jump thread if the z input is greater than 0. a slide thread would be really cool, too
+					thread jump(angles);			//starts jump thread and passes the thread the angles argument
+			}
+		} else {
+			leanTurnMult = 45 * upMultiplier;   			// makes turning steeper while you are airborne, so you can tilt like a boss.
+		}
+		
+		jumpHeight = jumpHeight - jumpRampDecel * frameTime;		// ramp down jumpheight when jumpthread is not active (looping using while)
+		if ( jumpHeight < 0.001f ) {
+			jumpHeight = 0.f;
+		}	
+		
+		currentLinVel = ((currentLinVel_x * forward) * (frameTime));
+		
+		if(( input_x != 0.f && input_y != 0.f) && ((leftAndRight_z != 0.f) && (currentLinVel_x != 0.f && currentLinVel_y != 0.f))) {
+		// if( input_x != 0.f && input_y != 0.f) { 	//need to ramp up turn speed based on steepness of angle
+			turnSpeed = turnSpeed + turnRampAccel * frameTime;   //ramp up turnspeed ^^ happens
+		} else {
+			turnSpeed = turnSpeed - turnRampDecel * frameTime;
+		}
+		
+		if ( turnSpeed < 0.0001f ) {	// caps turning
+			turnSpeed = 0.f;
+		}
+		if ( turnSpeed > maxTurnSpeed ) { // caps turning
+			turnSpeed = maxTurnSpeed;
+		}
+
+		keyTurnVel = getVectorKeyWithDefault( "keyTurnVel", '0 0 1' );
+		keyTurnVel_z = ((keyTurnVel_z * leanTurnMult) * (turnSpeed * frameTime)); //used to set velocity while turning. It's multiplied by your tilting angle and the input conditions that ramp speed
+
+		// if (( input_y < 0.f ) && (input_x != 0)) {	// Need these 4 blocks(combine them) to prevent weirdness, since this game doesn't naturally have 2 wheeled vehicles	
+			// setAngularVelocity( keyTurnVel ); 
+		// }
+		// if (( input_y > 0.f ) && (input_x != 0)) {	
+			// setAngularVelocity( -keyTurnVel );
+		// }
+
+		// if (leftAndRight_z < 0.f ) {			//and input y = 1, try to flip the bike	  
+			// setAngularVelocity( keyTurnVel );
+		// }       											
+		// if (leftAndRight_z > 0.f ) {			//and input y = -1, try to flip the bike
+			// setAngularVelocity( -keyTurnVel );
+		// }
+
+		// sys.print("turnSpeed   "); sys.print(turnSpeed); sys.print("   leanTurnMult   "); sys.print(leanTurnMult); sys.print("   keyTurnVel   "); sys.println(keyTurnVel); //gotta love debugging
+
+		//mouse stuff. Do this before to check.
+		angleDiff_x = AngleDiff( newAngles_x, oldAngles_x );								 // checks for differences in mouse input
+		angleDiff_y = AngleDiff( newAngles_y, oldAngles_y );
+		mouseRollAngles = (forward * mouseRollAngles_y); 								// local space controls																		
+	
+		//Mouse input and keyboard input combined	
+		if ( sys.fabs( angleDiff_y ) < sys.fabs( temp_y ) ) {
+			temp_y = temp_y + ( ( angleDiff_y - temp_y ) * 0.05 );
+		} else {
+			temp_y = temp_y + ( ( angleDiff_y - temp_y ) * 0.001 );
+			setAngularVelocity( mouseRollAngles );
+			if ( input_y > 0.f ) {											//Turning Right and leaning +leftAndRight_z, take input from the mouseRollAngles and combines it with the turning velocity to create a leaning tilt.
+				temp_y = temp_y + ( ( angleDiff_y - temp_y ) * 0.001 );						// 	|| (leftAndRight_z > 0) was the problem, but I need it back to automatically turn if tilting
+					setAngularVelocity( mouseRollAngles );
+						m_turnRoll = getAngularVelocity();				
+						m_turnRoll_z = -keyTurnVel_z;					
+					setAngularVelocity( m_turnRoll );
+			}
+			if ( input_y < 0.f ) {											//Turning Left and leaning -leftAndRight_z
+				temp_y = temp_y + ( ( angleDiff_y - temp_y ) * 0.001 );          				// 	|| (leftAndRight_z < 0) was the problem  but I need it back                                             
+					setAngularVelocity( mouseRollAngles );
+						m_turnRoll = getAngularVelocity();				
+						m_turnRoll_z = keyTurnVel_z;					
+					setAngularVelocity( m_turnRoll );
+			}
+		}
+
+		if ( driver != $null_entity ) {														
+			oldAngles = driver.getUserCmdAngles();
+		}	
+		
+		//Do this afterwards to send to the next loop.
+		mouseRollAngles_x = temp_x * 20;      
+		mouseRollAngles_x = min( mouseRollAngles_x, 3 );
+		mouseRollAngles_x = max( mouseRollAngles_x, -3 );	
+		
+ 		mouseRollAngles_y = -temp_y * 20;
+		mouseRollAngles_y = min( mouseRollAngles_y, 2 );
+		mouseRollAngles_y = max( mouseRollAngles_y, -2 );
+
+		sys.waitFrame();		//wait, or else you'll get a runaway loop error.
+	}
+	tiltThread = -1;
+}
+
+
+
+
+//vvv stuff that I had to include vvv
+
+void vehicle_bicycle::OnPlayerEntered( entity p, float position ) {
+	OnPlayerEntered_Base( p, position );
+	
+		if ( tiltThread == -1 ) {
+			tiltThread = thread tilt();
+		}
+}
+
+void vehicle_bicycle::OnPlayerExited( entity p, float position ) {
+	OnPlayerExited_Base( p, position );
+}
+
+void vehicle_bicycle::OnCollision( object traceObject, float velocity, vector mins, vector maxs ) {
+	OnCollision_Base( traceObject, velocity, mins, maxs );
+}
+
+void vehicle_bicycle::OnWeaponSelected( entity p, float index ) {
+	if ( index = 0 ) {
+		FireDecoy( p );
+	}
+}
+
+float vehicle_bicycle::vGetSteerScale() {
+	return getSteerAngle() / steeringAngle;
+}
+
+void vehicle_bicycle::vSetDeployableOwner( entity p ) {
+	if ( !sys.isClient() ) {
+		if ( p != $null_entity ) {
+			p.binAdd( self );
+		}
+	}
+}
+
+void vehicle_bicycle::vRemoveObject() {
+	if ( isEmpty() ) {
+		thread DecayThread();
+	}
+}
